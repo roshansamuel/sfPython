@@ -6,18 +6,28 @@ from scipy import interpolate
 
 device = "cpu"
 
-# If computeVSF is true, code will compute *only* velocity SF
-# If set to false, code will compute *only* temperature SF
-# Both are not computed together
-computeVSF = False
-
 import numba as nb  #comment this line if device is not cpu
 
 if device == "gpu":
    import cupy as cp
 
 print()
-    
+
+# If computeVSF is true, code will compute *only* velocity SF
+# If set to false, code will compute *only* temperature SF
+# Both are not computed together
+computeVSF = False
+
+# Default times
+startTime = 0.0
+stopTime = float('Inf')
+
+argList = sys.argv[1:]
+if argList and len(argList) == 3:
+    computeVSF = bool(int(argList[0]))
+    startTime = float(argList[1])
+    stopTime = float(argList[2])
+
 # read the data file ###############
 def hdf5_reader(filename,dataset):
     file_read = h5py.File(filename, 'r')
@@ -83,6 +93,7 @@ def periodicBC(f):
     f[0,:], f[-1,:] = f[-2,:], f[1,:]
 
 
+# WARNING: parallel=True may have to be disabled below on some systems
 @nb.jit(nopython=True, parallel=True)
 def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu):
     N = len(l_cap_x) 
@@ -104,8 +115,9 @@ def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u
 
     return 
 
+# WARNING: parallel=True may have to be disabled below on some systems
 @nb.jit(nopython=True, parallel=True)
-def tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu):
+def tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu):
     N = len(l_cap_x) 
 
     for m in range(N):
@@ -150,7 +162,7 @@ def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_a
     return 
 
 
-def tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array):
+def tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array):
     N = len(l_cap_x) 
 
     # copy data from cpu to gpu
@@ -192,15 +204,6 @@ l_cap_z = np.zeros_like(l)
 l_cap_x[1:], l_cap_z[1:] = ((dx*Ix[1:])/l[1:]), ((dx*Iz[1:])/l[1:])
 
 
-# Default times
-startTime = 0.0
-stopTime = float('Inf')
-
-argList = sys.argv[1:]
-if argList and len(argList) == 2:
-    startTime = float(argList[0])
-    stopTime = float(argList[1])
-
 tList = np.loadtxt(dataDir + "timeList.dat", comments='#')
 
 for i in range(tList.shape[0]):
@@ -238,12 +241,12 @@ for i in range(tList.shape[0]):
             if computeVSF:
                 vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array)
             else:
-                tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array)
+                tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array)
         else: 
             if computeVSF:
                 vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
             else:
-                tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu)
+                tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu)
 
         t_str_func_end = time.time()
         print("str func compute time = ", t_str_func_end-t_str_func_start)
