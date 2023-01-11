@@ -55,16 +55,16 @@ pSkip = 4096
 
 # define cpu arrays
 S_upll_array_cpu = np.zeros([nx, nz])
+S_u_r_array_cpu = np.zeros([nx, nz])
 if computeVSF:
-    S_u_r_array_cpu = np.zeros([nx, nz])
     S_ux_array_cpu = np.zeros([nx, nz])
     S_uz_array_cpu = np.zeros([nx, nz])
 
 # define gpu arrays
 if device == "gpu":
     S_upll_array = cp.asarray(S_upll_array_cpu)
+    S_u_r_array = cp.asarray(S_u_r_array_cpu)
     if computeVSF:
-        S_u_r_array = cp.asarray(S_u_r_array_cpu)
         S_ux_array = cp.asarray(S_ux_array_cpu)
         S_uz_array = cp.asarray(S_uz_array_cpu)
 
@@ -140,7 +140,7 @@ def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_a
         diff_magnitude_sqr = (del_u)**2 + (del_w)**2
 
         S_upll_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m]))
-        S_u_r_array[Ix[m], Iz[m]] = cp.mean((del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m])**3)#np.sum(u_par**q)/(np.shape(u_par)[0]*np.shape(u_par)[1]*np.shape(u_par)[2])
+        S_u_r_array[Ix[m], Iz[m]] = cp.mean((del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m])**3)
 
         S_ux_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m]))
         S_uz_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_w[:, :]*l_cap_z[m]))
@@ -167,6 +167,7 @@ def tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array):
         diff_temp_sqr = (del_t)**2
 
         S_upll_array[Ix[m], Iz[m]] = cp.mean(diff_temp_sqr[:, :]*(del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m]))
+        S_u_r_array[Ix[m], Iz[m]] = cp.mean(del_t[:, :]**3)
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
@@ -249,8 +250,8 @@ for i in range(tList.shape[0]):
 
         if device == "gpu":
             S_upll_array_cpu = cp.asnumpy(S_upll_array)
+            S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
             if computeVSF:
-                S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
                 S_ux_array_cpu = cp.asnumpy(S_ux_array)
                 S_uz_array_cpu = cp.asnumpy(S_uz_array)
 
@@ -262,8 +263,8 @@ for i in range(tList.shape[0]):
 
         hf = h5py.File(fileName, 'w')
         hf.create_dataset("S_upll", data=S_upll_array_cpu)
+        hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
         if computeVSF:
-            hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
             hf.create_dataset("S_ux", data=S_ux_array_cpu)
             hf.create_dataset("S_uz", data=S_uz_array_cpu)
         hf.close()
