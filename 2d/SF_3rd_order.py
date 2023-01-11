@@ -6,6 +6,11 @@ from scipy import interpolate
 
 device = "cpu"
 
+# If computeVSF is true, code will compute *only* velocity SF
+# If set to false, code will compute *only* temperature SF
+# Both are not computed together
+computeVSF = False
+
 import numba as nb  #comment this line if device is not cpu
 
 if device == "gpu":
@@ -50,18 +55,18 @@ pSkip = 4096
 
 # define cpu arrays
 S_upll_array_cpu = np.zeros([nx, nz])
-S_u_r_array_cpu = np.zeros([nx, nz])
-
-S_ux_array_cpu = np.zeros([nx, nz])
-S_uz_array_cpu = np.zeros([nx, nz])
+if computeVSF:
+    S_u_r_array_cpu = np.zeros([nx, nz])
+    S_ux_array_cpu = np.zeros([nx, nz])
+    S_uz_array_cpu = np.zeros([nx, nz])
 
 # define gpu arrays
 if device == "gpu":
     S_upll_array = cp.asarray(S_upll_array_cpu)
-    S_u_r_array = cp.asarray(S_u_r_array_cpu)
-
-    S_ux_array = cp.asarray(S_ux_array_cpu)
-    S_uz_array = cp.asarray(S_uz_array_cpu)
+    if computeVSF:
+        S_u_r_array = cp.asarray(S_u_r_array_cpu)
+        S_ux_array = cp.asarray(S_ux_array_cpu)
+        S_uz_array = cp.asarray(S_uz_array_cpu)
 
 
 #############################
@@ -99,6 +104,26 @@ def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u
 
     return 
 
+@nb.jit(nopython=True, parallel=True)
+def tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu):
+    N = len(l_cap_x) 
+
+    for m in range(N):
+        u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
+        w1, w2 = Vz[0:Nx-Ix[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iz[m]:Nz]
+        t1, t2 = T[0:Nx-Ix[m], 0:Nz-Iz[m]], T[Ix[m]:Nx, Iz[m]:Nz]
+
+        del_u, del_w, del_t = u2[:, :] - u1[:, :], w2[:, :] - w1[:, :], t2[:, :] - t1[:, :]
+        diff_temp_sqr = (del_t)**2
+
+        S_upll_array_cpu[Ix[m], Iz[m]] = np.mean(diff_temp_sqr[:, :]*(del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m]))
+        S_u_r_array_cpu[Ix[m], Iz[m]] = np.mean(del_t[:, :]**3)
+
+        if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
+
+    return 
+
+
 def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array):
     N = len(l_cap_x) 
 
@@ -119,6 +144,29 @@ def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_a
 
         S_ux_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m]))
         S_uz_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_w[:, :]*l_cap_z[m]))
+
+        if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
+
+    return 
+
+
+def tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array):
+    N = len(l_cap_x) 
+
+    # copy data from cpu to gpu
+    Vx, Vz, T = cp.asarray(Vx), cp.asarray(Vz), cp.asarray(T)
+
+    cp._core.set_routine_accelerators(['cub', 'cutensor'])
+    
+    for m in range(N):
+        u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
+        w1, w2 = Vz[0:Nx-Ix[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iz[m]:Nz]
+        t1, t2 = T[0:Nx-Ix[m], 0:Nz-Iz[m]], T[Ix[m]:Nx, Iz[m]:Nz]
+
+        del_u, del_w, del_t = u2[:, :] - u1[:, :], w2[:, :] - w1[:, :], t2[:, :] - t1[:, :]
+        diff_temp_sqr = (del_t)**2
+
+        S_upll_array[Ix[m], Iz[m]] = cp.mean(diff_temp_sqr[:, :]*(del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m]))
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
@@ -161,6 +209,8 @@ for i in range(tList.shape[0]):
         print("\nReading from file ", fileName)
         Vx = np.pad(hdf5_reader(fileName, "Vx"), 1)
         Vz = np.pad(hdf5_reader(fileName, "Vz"), 1)
+        if not computeVSF:
+            T = np.pad(hdf5_reader(fileName, "T"), 1)
 
         xI = np.pad(hdf5_reader(fileName, "X"), (1, 1), 'constant', constant_values=(0, Lx))
         zI = np.pad(hdf5_reader(fileName, "Z"), (1, 1), 'constant', constant_values=(0, Lz))
@@ -169,10 +219,14 @@ for i in range(tList.shape[0]):
         xI[0], xI[-1] = -xI[1], Lx + xI[1]
         periodicBC(Vx)
         periodicBC(Vz)
+        if not computeVSF:
+            periodicBC(T)
 
         print("\tInterpolating data")
         Vx = interpolateData(Vx, X, Z, xI, zI)
         Vz = interpolateData(Vz, X, Z, xI, zI)
+        if not computeVSF:
+            T = interpolateData(T, X, Z, xI, zI)
 
         print("\tComputing Structure Function")
         ## compute str_function
@@ -180,28 +234,37 @@ for i in range(tList.shape[0]):
         print()
 
         if device == "gpu":
-            vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array)
+            if computeVSF:
+                vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array)
+            else:
+                tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array)
         else: 
-            vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
+            if computeVSF:
+                vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
+            else:
+                tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu)
 
         t_str_func_end = time.time()
         print("str func compute time = ", t_str_func_end-t_str_func_start)
 
         if device == "gpu":
             S_upll_array_cpu = cp.asnumpy(S_upll_array)
-            S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
-
-            S_ux_array_cpu = cp.asnumpy(S_ux_array)
-            S_uz_array_cpu = cp.asnumpy(S_uz_array)
-
-
+            if computeVSF:
+                S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
+                S_ux_array_cpu = cp.asnumpy(S_ux_array)
+                S_uz_array_cpu = cp.asnumpy(S_uz_array)
 
         ## save file
-        fileName = dataDir + "StrFunc_{0:09.4f}.h5".format(tVal)
+        if computeVSF:
+            fileName = dataDir + "StrFunc_{0:09.4f}.h5".format(tVal)
+        else:
+            fileName = dataDir + "TmpStrFunc_{0:09.4f}.h5".format(tVal)
+
         hf = h5py.File(fileName, 'w')
         hf.create_dataset("S_upll", data=S_upll_array_cpu)
-        hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
-        hf.create_dataset("S_ux", data=S_ux_array_cpu)
-        hf.create_dataset("S_uz", data=S_uz_array_cpu)
+        if computeVSF:
+            hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
+            hf.create_dataset("S_ux", data=S_ux_array_cpu)
+            hf.create_dataset("S_uz", data=S_uz_array_cpu)
         hf.close()
 
