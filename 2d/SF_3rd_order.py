@@ -96,7 +96,7 @@ def periodicBC(f):
 # WARNING: parallel=True may have to be disabled below on some systems
 @nb.jit(nopython=True, parallel=True)
 def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu):
-    N = len(l_cap_x) 
+    N = len(l_cap_x)
 
     for m in range(N):
         u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
@@ -113,12 +113,12 @@ def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
-    return 
+    return
 
 # WARNING: parallel=True may have to be disabled below on some systems
 @nb.jit(nopython=True, parallel=True)
 def tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu):
-    N = len(l_cap_x) 
+    N = len(l_cap_x)
 
     for m in range(N):
         u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
@@ -133,17 +133,17 @@ def tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, 
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
-    return 
+    return
 
 
 def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array):
-    N = len(l_cap_x) 
+    N = len(l_cap_x)
 
     # copy data from cpu to gpu
     Vx, Vz = cp.asarray(Vx), cp.asarray(Vz)
 
     cp._core.set_routine_accelerators(['cub', 'cutensor'])
-    
+
     for m in range(N):
         u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
         w1, w2 = Vz[0:Nx-Ix[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iz[m]:Nz]
@@ -159,17 +159,17 @@ def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_a
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
-    return 
+    return
 
 
 def tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array):
-    N = len(l_cap_x) 
+    N = len(l_cap_x)
 
     # copy data from cpu to gpu
     Vx, Vz, T = cp.asarray(Vx), cp.asarray(Vz), cp.asarray(T)
 
     cp._core.set_routine_accelerators(['cub', 'cutensor'])
-    
+
     for m in range(N):
         u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
         w1, w2 = Vz[0:Nx-Ix[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iz[m]:Nz]
@@ -183,7 +183,7 @@ def tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
-    return 
+    return
 
 
 ## pre-process
@@ -242,7 +242,7 @@ for i in range(tList.shape[0]):
                 vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array)
             else:
                 tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array)
-        else: 
+        else:
             if computeVSF:
                 vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
             else:

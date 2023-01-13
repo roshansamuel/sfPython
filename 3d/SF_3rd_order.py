@@ -9,7 +9,7 @@ import numba as nb
 if device == "gpu":
    import cupy as cp
 
-    
+
 # read the data file ###############
 def hdf5_reader(filename,dataset):
     file_read = h5py.File(filename, 'r')
@@ -34,7 +34,7 @@ if device == "gpu":
 
 ############ Calculate domain params ####
 
-L = 2*np.pi #Length of the domain 
+L = 2*np.pi #Length of the domain
 
 Nx, Ny, Nz = np.shape(Vx)[0], np.shape(Vx)[1], np.shape(Vx)[2]  #no of grid points in each directon
 
@@ -67,7 +67,7 @@ if device == "gpu":
 
 @nb.jit(nopython=True, parallel=True)
 def str_function_cpu(Vx, Vy, Vz, Ix, Iy, Iz, l_cap_x, l_cap_y, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uy_array_cpu, S_uz_array_cpu):
-    N = len(l_cap_x) 
+    N = len(l_cap_x)
 
     for m in range(N):
         u1, u2 = Vx[0:Nx-Ix[m], 0:Ny-Iy[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iy[m]:Ny, Iz[m]:Nz]
@@ -75,8 +75,8 @@ def str_function_cpu(Vx, Vy, Vz, Ix, Iy, Iz, l_cap_x, l_cap_y, l_cap_z, S_upll_a
         w1, w2 = Vz[0:Nx-Ix[m], 0:Ny-Iy[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iy[m]:Ny, Iz[m]:Nz]
 
         del_u, del_v, del_w  = u2[:, :, :] - u1[:, :, :], v2[:, :, :] - v1[:, :, :], w2[:, :, :] - w1[:, :, :]
-        diff_magnitude_sqr = (del_u)**2 + (del_v)**2 + (del_w)**2     
-        
+        diff_magnitude_sqr = (del_u)**2 + (del_v)**2 + (del_w)**2
+
         S_upll_array_cpu[Ix[m], Iy[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :, :]*(del_u[:, :, :]*l_cap_x[m] + del_v[:, :, :]*l_cap_y[m] + del_w[:, :, :]*l_cap_z[m]))
         S_u_r_array_cpu[Ix[m], Iy[m], Iz[m]] = np.mean((del_u[:, :, :]*l_cap_x[m] + del_v[:, :, :]*l_cap_y[m] + del_w[:, :, :]*l_cap_z[m])**3)
 
@@ -84,35 +84,35 @@ def str_function_cpu(Vx, Vy, Vz, Ix, Iy, Iz, l_cap_x, l_cap_y, l_cap_z, S_upll_a
         S_uy_array_cpu[Ix[m], Iy[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :, :]*(del_v[:, :, :]*l_cap_y[m]))
         S_uz_array_cpu[Ix[m], Iy[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :, :]*(del_w[:, :, :]*l_cap_z[m]))
 
-        print (m, Ix[m]*dx,  Iy[m]*dy, Iz[m]*dz)        
-    
-    return 
+        print (m, Ix[m]*dx, Iy[m]*dy, Iz[m]*dz)
+
+    return
 
 def str_function_gpu(Vx, Vy, Vz, Ix, Iy, Iz, l_cap_x, l_cap_y, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uy_array, S_uz_array):
-    N = len(l_cap_x) 
+    N = len(l_cap_x)
 
     Vx, Vy, Vz = cp.asarray(Vx), cp.asarray(Vy), cp.asarray(Vz) # copy the data on cpu
 
     cp._core.set_routine_accelerators(['cub', 'cutensor'])
-    
+
     for m in range(N):
         u1, u2 = Vx[0:Nx-Ix[m], 0:Ny-Iy[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iy[m]:Ny, Iz[m]:Nz]
         v1, v2 = Vy[0:Nx-Ix[m], 0:Ny-Iy[m], 0:Nz-Iz[m]], Vy[Ix[m]:Nx, Iy[m]:Ny, Iz[m]:Nz]
         w1, w2 = Vz[0:Nx-Ix[m], 0:Ny-Iy[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iy[m]:Ny, Iz[m]:Nz]
 
         del_u, del_v, del_w  = u2[:, :, :] - u1[:, :, :], v2[:, :, :] - v1[:, :, :], w2[:, :, :] - w1[:, :, :]
-        diff_magnitude_sqr = (del_u)**2 + (del_v)**2 + (del_w)**2     
-        
+        diff_magnitude_sqr = (del_u)**2 + (del_v)**2 + (del_w)**2
+
         S_upll_array[Ix[m], Iy[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :, :]*(del_u[:, :, :]*l_cap_x[m] + del_v[:, :, :]*l_cap_y[m] + del_w[:, :, :]*l_cap_z[m]))
         S_u_r_array[Ix[m], Iy[m], Iz[m]] = cp.mean((del_u[:, :, :]*l_cap_x[m] + del_v[:, :, :]*l_cap_y[m] + del_w[:, :, :]*l_cap_z[m])**3)
 
         S_ux_array[Ix[m], Iy[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :, :]*(del_u[:, :, :]*l_cap_x[m]))
-        S_uy_array[Ix[m], Iy[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :, :]*(del_v[:, :, :]*l_cap_y[m]))
+        S_uy_array[Ix[m], Iy[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :, :]*(del_v[:, :, :]*l_cap_y[m]))
         S_uz_array[Ix[m], Iy[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :, :]*(del_w[:, :, :]*l_cap_z[m]))
 
-        print (m, Ix[m]*dx,  Iy[m]*dy, Iz[m]*dz)        
+        print (m, Ix[m]*dx, Iy[m]*dy, Iz[m]*dz)
 
-    return 
+    return
 
 
 ## pre-process
@@ -154,7 +154,7 @@ t_str_func_start = time.time()
 
 if device == "gpu":
     str_function_gpu(Vx, Vy, Vz, Ix, Iy, Iz, l_cap_x, l_cap_y, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uy_array, S_uz_array)
-else: 
+else:
     str_function_cpu(Vx, Vy, Vz, Ix, Iy, Iz, l_cap_x, l_cap_y, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uy_array_cpu, S_uz_array_cpu)
 
 t_str_func_end = time.time()

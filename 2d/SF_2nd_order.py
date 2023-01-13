@@ -1,6 +1,8 @@
-import numpy as np
+import sys
 import h5py
 import time
+import numpy as np
+from scipy import interpolate
 
 device = "cpu"
 
@@ -9,127 +11,135 @@ import numba as nb  #comment this line if device is not cpu
 if device == "gpu":
    import cupy as cp
 
-    
+print()
+
+# If computeVSF is true, code will compute *only* velocity SF
+# If set to false, code will compute *only* temperature SF
+# Both are not computed together
+computeVSF = False
+
+# Default times
+startTime = 0.0
+stopTime = float('Inf')
+
+argList = sys.argv[1:]
+if argList and len(argList) == 3:
+    computeVSF = bool(int(argList[0]))
+    startTime = float(argList[1])
+    stopTime = float(argList[2])
+
 # read the data file ###############
 def hdf5_reader(filename,dataset):
     file_read = h5py.File(filename, 'r')
     dataset_read = file_read["/"+dataset]
-    V = dataset_read[:,:]
+    V = dataset_read[...]
 
     return V
-
-
-Vx = hdf5_reader("U.V1r.h5", "U.V1r")
-Vz = hdf5_reader("U.V3r.h5", "U.V3r")
-
 
 if device == "gpu":
     # select GPU device
     dev1 = cp.cuda.Device(1)
 
     dev1.use()
-############################
-
 
 ############ Calculate domain params ####
 
-L = 2*np.pi #Length of the domain 
+dataDir = "data/1_1e9_pySaras/"
 
-Nx, Nz = np.shape(Vx)[0], np.shape(Vx)[1]  #no of grid points in each directon
+Lx, Lz = 2.0, 1.0
+Nx, Nz = 1024, 512
+lStr, lEnd = 0.4, 2.2
 
-dx = L/Nx
-dz = L/Nz
+dx = Lx/Nx
+dz = Lz/Nz
+
+nx = Nx
+nz = Nz
+
+X = np.linspace(0.0, Lx, Nx, endpoint=False)
+Z = np.linspace(0.0, Lz, Nz, endpoint=False)
+
+pSkip = 4096
 
 #############################
 
 # define cpu arrays
-S_array_cpu = np.zeros([Nx//2, Nz//2])
-S_u_r_array_cpu = np.zeros([Nx//2, Nz//2])
+S_array_cpu = np.zeros([nx, nz])
+S_u_r_array_cpu = np.zeros([nx, nz])
 
-S_ux_array_cpu = np.zeros([Nx//2, Nz//2])
-S_uz_array_cpu = np.zeros([Nx//2, Nz//2])
+S_ux_array_cpu = np.zeros([nx, nz])
+S_uz_array_cpu = np.zeros([nx, nz])
 
 # define gpu arrays
 if device == "gpu":
     S_array = cp.asarray(S_array_cpu)
     S_u_r_array = cp.asarray(S_u_r_array_cpu)
 
-
     S_ux_array = cp.asarray(S_ux_array_cpu)
     S_uz_array = cp.asarray(S_uz_array_cpu)
 
 
 #############################
-#comment this function if device is not cpu
+def interpolateData(f, xO, zO, xI, zI):
+    intFunct = interpolate.interp1d(zI, f, kind='cubic', axis=1)
+    f = intFunct(zO)
+    intFunct = interpolate.interp1d(xI, f, kind='cubic', axis=0)
+    f = intFunct(xO)
 
-@nb.jit(nopython=True, parallel=True) 
-def str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu):
+    return f
 
-       
-    N = len(l_cap_x) 
+
+def periodicBC(f):
+    f[0,:], f[-1,:] = f[-2,:], f[1,:]
+
+
+# WARNING: parallel=True may have to be disabled below on some systems
+@nb.jit(nopython=True, parallel=True)
+def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu):
+    N = len(l_cap_x)
 
     for m in range(N):
-         
         u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
-                
         w1, w2 = Vz[0:Nx-Ix[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iz[m]:Nz]
 
+        del_u, del_w = u2[:, :] - u1[:, :], w2[:, :] - w1[:, :]
+        diff_magnitude_sqr = (del_u)**2 + (del_w)**2
 
-        del_u, del_w  = u2[:, :] - u1[:, :], w2[:, :] - w1[:, :]
-
-        diff_magnitude_sqr = (del_u)**2 + (del_w)**2     
-        
         S_array_cpu[Ix[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :])
-
         S_u_r_array_cpu[Ix[m], Iz[m]] = np.mean((del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m])**2)
 
-        
-
         S_ux_array_cpu[Ix[m], Iz[m]] = np.mean((del_u[:, :]*l_cap_x[m])**2)
-
         S_uz_array_cpu[Ix[m], Iz[m]] = np.mean((del_w[:, :]*l_cap_z[m])**2)
 
+        if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
-        print (m, Ix[m]*dx, Iz[m]*dz)        
+    return
 
-    
-    return 
 
-def str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array, S_u_r_array, S_ux_array, S_uz_array):
+def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array, S_u_r_array, S_ux_array, S_uz_array):
+    N = len(l_cap_x)
 
-       
-    N = len(l_cap_x) 
-
-    Vx, Vz = cp.asarray(Vx), cp.asarray(Vz) # copy the data on cpu
-    print ("GPU copy done")
+    # copy data from cpu to gpu
+    Vx, Vz = cp.asarray(Vx), cp.asarray(Vz)
 
     cp._core.set_routine_accelerators(['cub', 'cutensor'])
-    
+
     for m in range(N):
-         
         u1, u2 = Vx[0:Nx-Ix[m], 0:Nz-Iz[m]], Vx[Ix[m]:Nx, Iz[m]:Nz]
-                
         w1, w2 = Vz[0:Nx-Ix[m], 0:Nz-Iz[m]], Vz[Ix[m]:Nx, Iz[m]:Nz]
 
+        del_u, del_w = u2[:, :] - u1[:, :], w2[:, :] - w1[:, :]
+        diff_magnitude_sqr = (del_u)**2 + (del_w)**2
 
-        del_u, del_w  = u2[:, :] - u1[:, :], w2[:, :] - w1[:, :]
-
-        diff_magnitude_sqr = (del_u)**2 + (del_w)**2     
-        
         S_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :])
-
         S_u_r_array[Ix[m], Iz[m]] = cp.mean((del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m])**2)
-        
 
         S_ux_array[Ix[m], Iz[m]] = cp.mean((del_u[:, :]*l_cap_x[m])**2)
-
         S_uz_array[Ix[m], Iz[m]] = cp.mean((del_w[:, :]*l_cap_z[m])**2)
 
+        if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
-        print (m, Ix[m]*dx, Iz[m]*dz)        
-
-    
-    return 
+    return
 
 
 ## pre-process
@@ -141,16 +151,14 @@ t_pre_process_start = time.time()
 
 for ix in range(Nx//2):
     for iz in range(Nz//2):
-        
         l_temp = np.sqrt((ix)**2+(iz)**2)
         #if (l_temp*dx > 0.4) and (l_temp*dx < 1.2):
-        
         l.append(l_temp)
 
         Ix.append(ix)
         Iz.append(iz)
         count += 1
-        
+
     print (ix, iz)
 
 
@@ -161,53 +169,63 @@ print("preprocess loop = ", t_pre_process_stop - t_pre_process_start)
 print("Total count", count)
 
 l, Ix, Iz = np.asarray(l), np.asarray(Ix), np.asarray(Iz)
-
 l_cap_x, l_cap_z = ((Ix[:])/l[:]), ((Iz[:])/l[:])
-
 l_cap_x[0], l_cap_z[0] = 0, 0
 
 
+tList = np.loadtxt(dataDir + "timeList.dat", comments='#')
 
-## compute str_function
-if device == "gpu":
+for i in range(tList.shape[0]):
+    tVal = tList[i]
+    if tVal > startTime and tVal < stopTime:
+        fileName = dataDir + "Soln_{0:09.4f}.h5".format(tVal)
+        print("\nReading from file ", fileName)
+        Vx = np.pad(hdf5_reader(fileName, "Vx"), 1)
+        Vz = np.pad(hdf5_reader(fileName, "Vz"), 1)
+        if not computeVSF:
+            T = np.pad(hdf5_reader(fileName, "T"), 1)
 
-    t_str_func_start = time.time()
+        xI = np.pad(hdf5_reader(fileName, "X"), (1, 1), 'constant', constant_values=(0, Lx))
+        zI = np.pad(hdf5_reader(fileName, "Z"), (1, 1), 'constant', constant_values=(0, Lz))
 
-    str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array, S_u_r_array, S_ux_array, S_uz_array)
+        # Periodic BC
+        xI[0], xI[-1] = -xI[1], Lx + xI[1]
+        periodicBC(Vx)
+        periodicBC(Vz)
+        if not computeVSF:
+            periodicBC(T)
 
-    t_str_func_end = time.time()
+        print("\tInterpolating data")
+        Vx = interpolateData(Vx, X, Z, xI, zI)
+        Vz = interpolateData(Vz, X, Z, xI, zI)
+        if not computeVSF:
+            T = interpolateData(T, X, Z, xI, zI)
 
-    print("str func compute time = ", t_str_func_end-t_str_func_start)
+        print("\tComputing Structure Function")
+        ## compute str_function
+        t_str_func_start = time.time()
+        print()
 
+        if device == "gpu":
+            vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array, S_u_r_array, S_ux_array, S_uz_array)
+        else:
+            vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
 
-else: 
+        t_str_func_end = time.time()
+        print("str func compute time = ", t_str_func_end-t_str_func_start)
 
-    t_str_func_start = time.time()
+        if device == "gpu":
+            S_array_cpu = cp.asnumpy(S_array)
+            S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
 
-    str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
+            S_ux_array_cpu = cp.asnumpy(S_ux_array)
+            S_uz_array_cpu = cp.asnumpy(S_uz_array)
 
-    t_str_func_end = time.time()
-
-    print("str func compute time = ", t_str_func_end-t_str_func_start)
-
-
-
-if device == "gpu":
-    S_array_cpu = cp.asnumpy(S_array)
-    S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
-
-    S_ux_array_cpu = cp.asnumpy(S_ux_array)
-    S_uz_array_cpu = cp.asnumpy(S_uz_array)
-
-
-
-## save file
-hf = h5py.File("str_function.h5", 'w')
-hf.create_dataset("S", data=S_array_cpu)
-hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
-hf.create_dataset("S_ux", data=S_ux_array_cpu)
-hf.create_dataset("S_uz", data=S_uz_array_cpu)
-
-hf.close()
-
+        ## save file
+        hf = h5py.File("str_function.h5", 'w')
+        hf.create_dataset("S", data=S_array_cpu)
+        hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
+        hf.create_dataset("S_ux", data=S_ux_array_cpu)
+        hf.create_dataset("S_uz", data=S_uz_array_cpu)
+        hf.close()
 
