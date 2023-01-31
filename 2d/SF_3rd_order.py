@@ -61,7 +61,7 @@ if device == "gpu":
 
 ############ Calculate domain params ####
 
-dataDir = "data/1_1e9_pySaras/"
+dataDir = "../data/2d_data/1_1e9_pySaras/"
 
 Lx, Lz = 2.0, 1.0
 Nx, Nz = 1024, 512
