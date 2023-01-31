@@ -14,19 +14,36 @@ if device == "gpu":
 print()
 
 # If computeVSF is true, code will compute *only* velocity SF
-# If set to false, code will compute *only* temperature SF
+# If set to false, code will compute *only* scalar SF
 # Both are not computed together
 computeVSF = False
+
+# Name of scalar whose SF must be computed if computeVSF is False
+sfScalar = 'T'
 
 # Default times
 startTime = 0.0
 stopTime = float('Inf')
 
 argList = sys.argv[1:]
-if argList and len(argList) == 3:
-    computeVSF = bool(int(argList[0]))
-    startTime = float(argList[1])
-    stopTime = float(argList[2])
+if argList:
+    # If only two arguments are there, it is start and end times
+    if len(argList) == 2:
+        startTime = float(argList[0])
+        stopTime = float(argList[1])
+        computeVSF = True
+    elif len(argList) == 3:
+        startTime = float(argList[0])
+        stopTime = float(argList[1])
+        computeVSF = False
+        sfScalar = argList[2]
+    else:
+        print("Argument error")
+        exit()
+else:
+    print("Argument error")
+    exit()
+
 
 # read the data file ###############
 def hdf5_reader(filename,dataset):
@@ -66,17 +83,11 @@ pSkip = 4096
 # define cpu arrays
 S_upll_array_cpu = np.zeros([nx, nz])
 S_u_r_array_cpu = np.zeros([nx, nz])
-if computeVSF:
-    S_ux_array_cpu = np.zeros([nx, nz])
-    S_uz_array_cpu = np.zeros([nx, nz])
 
 # define gpu arrays
 if device == "gpu":
     S_upll_array = cp.asarray(S_upll_array_cpu)
     S_u_r_array = cp.asarray(S_u_r_array_cpu)
-    if computeVSF:
-        S_ux_array = cp.asarray(S_ux_array_cpu)
-        S_uz_array = cp.asarray(S_uz_array_cpu)
 
 
 #############################
@@ -95,7 +106,7 @@ def periodicBC(f):
 
 # WARNING: parallel=True may have to be disabled below on some systems
 @nb.jit(nopython=True, parallel=True)
-def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu):
+def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu):
     N = len(l_cap_x)
 
     for m in range(N):
@@ -107,9 +118,6 @@ def vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u
 
         S_upll_array_cpu[Ix[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m]))
         S_u_r_array_cpu[Ix[m], Iz[m]] = np.mean((del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m])**3)
-
-        S_ux_array_cpu[Ix[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m]))
-        S_uz_array_cpu[Ix[m], Iz[m]] = np.mean(diff_magnitude_sqr[:, :]*(del_w[:, :]*l_cap_z[m]))
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
@@ -136,7 +144,7 @@ def tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, 
     return
 
 
-def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array):
+def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array):
     N = len(l_cap_x)
 
     # copy data from cpu to gpu
@@ -153,9 +161,6 @@ def vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_a
 
         S_upll_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m]))
         S_u_r_array[Ix[m], Iz[m]] = cp.mean((del_u[:, :]*l_cap_x[m] + del_w[:, :]*l_cap_z[m])**3)
-
-        S_ux_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_u[:, :]*l_cap_x[m]))
-        S_uz_array[Ix[m], Iz[m]] = cp.mean(diff_magnitude_sqr[:, :]*(del_w[:, :]*l_cap_z[m]))
 
         if (not m%pSkip): print(m, N, Ix[m]*dx, Iz[m]*dz)
 
@@ -214,7 +219,7 @@ for i in range(tList.shape[0]):
         Vx = np.pad(hdf5_reader(fileName, "Vx"), 1)
         Vz = np.pad(hdf5_reader(fileName, "Vz"), 1)
         if not computeVSF:
-            T = np.pad(hdf5_reader(fileName, "T"), 1)
+            T = np.pad(hdf5_reader(fileName, sfScalar), 1)
 
         xI = np.pad(hdf5_reader(fileName, "X"), (1, 1), 'constant', constant_values=(0, Lx))
         zI = np.pad(hdf5_reader(fileName, "Z"), (1, 1), 'constant', constant_values=(0, Lz))
@@ -239,12 +244,12 @@ for i in range(tList.shape[0]):
 
         if device == "gpu":
             if computeVSF:
-                vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array, S_ux_array, S_uz_array)
+                vel_str_function_gpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array)
             else:
                 tmp_str_function_gpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array, S_u_r_array)
         else:
             if computeVSF:
-                vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu, S_ux_array_cpu, S_uz_array_cpu)
+                vel_str_function_cpu(Vx, Vz, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu)
             else:
                 tmp_str_function_cpu(Vx, Vz, T, Ix, Iz, l_cap_x, l_cap_z, S_upll_array_cpu, S_u_r_array_cpu)
 
@@ -254,21 +259,15 @@ for i in range(tList.shape[0]):
         if device == "gpu":
             S_upll_array_cpu = cp.asnumpy(S_upll_array)
             S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
-            if computeVSF:
-                S_ux_array_cpu = cp.asnumpy(S_ux_array)
-                S_uz_array_cpu = cp.asnumpy(S_uz_array)
 
         ## save file
         if computeVSF:
-            fileName = dataDir + "StrFunc_{0:09.4f}.h5".format(tVal)
+            fileName = dataDir + "V_StrFunc_{0:09.4f}.h5".format(tVal)
         else:
-            fileName = dataDir + "TmpStrFunc_{0:09.4f}.h5".format(tVal)
+            fileName = dataDir + sfScalar + "_StrFunc_{0:09.4f}.h5".format(tVal)
 
         hf = h5py.File(fileName, 'w')
         hf.create_dataset("S_upll", data=S_upll_array_cpu)
         hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
-        if computeVSF:
-            hf.create_dataset("S_ux", data=S_ux_array_cpu)
-            hf.create_dataset("S_uz", data=S_uz_array_cpu)
         hf.close()
 
