@@ -252,16 +252,18 @@ for i in range(tList.shape[0]):
 
         if device == "gpu":
             S_array_cpu = cp.asnumpy(S_array)
-            S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
+            if computeVSF:
+                S_u_r_array_cpu = cp.asnumpy(S_u_r_array)
 
         ## save file
         if computeVSF:
-            fileName = dataDir + "V_StrFunc_{0:09.4f}.h5".format(tVal)
+            fileName = dataDir + "V_SF2_{0:09.4f}.h5".format(tVal)
         else:
-            fileName = dataDir + sfScalar + "_StrFunc_{0:09.4f}.h5".format(tVal)
+            fileName = dataDir + sfScalar + "_SF2_{0:09.4f}.h5".format(tVal)
 
         hf = h5py.File(fileName, 'w')
         hf.create_dataset("S", data=S_array_cpu)
-        hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
+        if computeVSF:
+            hf.create_dataset("S_u_r", data=S_u_r_array_cpu)
         hf.close()
 
